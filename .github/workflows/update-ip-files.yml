@@ -1,0 +1,45 @@
+name: Update IP Files
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-ip-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update ip.txt and ipv6.txt
+        run: |
+          set -euo pipefail
+
+          tmp_v4="$(mktemp)"
+          tmp_v6="$(mktemp)"
+
+          curl -fsSL "https://www.cloudflare.com/ips-v4" | sed '/^[[:space:]]*$/d' > "$tmp_v4"
+          curl -fsSL "https://www.cloudflare.com/ips-v6" | sed '/^[[:space:]]*$/d' > "$tmp_v6"
+
+          mv "$tmp_v4" ip.txt
+          mv "$tmp_v6" ipv6.txt
+
+      - name: Commit and push changes
+        run: |
+          set -euo pipefail
+
+          if git diff --quiet -- ip.txt ipv6.txt; then
+            echo "No changes detected."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add ip.txt ipv6.txt
+          git commit -m "chore: update Cloudflare IP files"
+          git push
