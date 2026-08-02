@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   update-ip-files:
@@ -28,18 +29,24 @@ jobs:
           mv "$tmp_v4" ip.txt
           mv "$tmp_v6" ipv6.txt
 
-      - name: Commit and push changes
-        run: |
-          set -euo pipefail
+      - name: Create pull request when files changed
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Cloudflare IP files"
+          title: "chore: update Cloudflare IP files"
+          body: "Automated update for `ip.txt` and `ipv6.txt`."
+          branch: "chore/update-cloudflare-ip-files"
+          delete-branch: true
+          add-paths: |
+            ip.txt
+            ipv6.txt
 
-          if git diff --quiet -- ip.txt ipv6.txt; then
-            echo "No changes detected."
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add ip.txt ipv6.txt
-          git commit -m "chore: update Cloudflare IP files"
-          git push
+      - name: Enable PR auto-merge
+        if: ${{ steps.create_pr.outputs.pull-request-number != '' }}
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ steps.create_pr.outputs.pull-request-number }}
+          merge-method: squash
