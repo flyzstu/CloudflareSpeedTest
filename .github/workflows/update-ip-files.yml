@@ -1,0 +1,52 @@
+name: Update IP Files
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-ip-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update ip.txt and ipv6.txt
+        run: |
+          set -euo pipefail
+
+          tmp_v4="$(mktemp)"
+          tmp_v6="$(mktemp)"
+
+          curl -fsSL "https://www.cloudflare.com/ips-v4" | sed '/^[[:space:]]*$/d' > "$tmp_v4"
+          curl -fsSL "https://www.cloudflare.com/ips-v6" | sed '/^[[:space:]]*$/d' > "$tmp_v6"
+
+          mv "$tmp_v4" ip.txt
+          mv "$tmp_v6" ipv6.txt
+
+      - name: Create pull request when files changed
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: update Cloudflare IP files"
+          title: "chore: update Cloudflare IP files"
+          body: "Automated update for `ip.txt` and `ipv6.txt`."
+          branch: "chore/update-cloudflare-ip-files"
+          delete-branch: true
+          add-paths: |
+            ip.txt
+            ipv6.txt
+
+      - name: Enable PR auto-merge
+        if: ${{ steps.create_pr.outputs.pull-request-number != '' }}
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ steps.create_pr.outputs.pull-request-number }}
+          merge-method: squash
