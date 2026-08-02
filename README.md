@@ -127,7 +127,7 @@ IP 地址           已发送  已接收  丢包率  平均延迟  下载速度(
 # 2. 延迟排序（延迟 从低到高 排序并按条件过滤，不同丢包率会分开排序，因此可能会有一些延迟低但丢包的 IP 排到后面）
 # 3. 下载测速（从延迟最低的 IP 开始依次下载测速，默认测够 10 个就会停止）
 # 4. 速度排序（速度从高到低排序）
-# 5. 输出结果（通过参数控制是否输出到命令行(-p 0)或输出到文件(-o "")）
+# 5. 输出结果（通过参数控制是否输出到命令行(-p 0)、CSV 文件(-o "")或原子 JSON 文件(-json result.json)）
 
 # 注意：输出的结果文件 result.csv 通过微软 Excel 表格打开会中文乱码，这是正常的，其他表格软件/记事本都显示正常
 ```
@@ -140,6 +140,37 @@ IP 地址           已发送  已接收  丢包率  平均延迟  下载速度(
 IP 地址,已发送,已接收,丢包率,平均延迟,下载速度(MB/s),地区码
 104.27.200.69,4,4,0.00,146.23,28.64,LAX
 ```
+
+外部程序可通过 `-json result.json` 获取机器可读结果。JSON 文件通过同目录临时文件原子替换，读取方不会看到只写入一部分的内容。即使本次没有可用 IP，也会输出 `best: null` 和空的 `results` 数组：
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-02T10:20:30Z",
+  "best": {
+    "ip": "104.27.200.69",
+    "sent": 4,
+    "received": 4,
+    "loss_rate": 0,
+    "latency_ms": 146.23,
+    "download_speed_mb_per_second": 28.64,
+    "colo": "LAX"
+  },
+  "results": [
+    {
+      "ip": "104.27.200.69",
+      "sent": 4,
+      "received": 4,
+      "loss_rate": 0,
+      "latency_ms": 146.23,
+      "download_speed_mb_per_second": 28.64,
+      "colo": "LAX"
+    }
+  ]
+}
+```
+
+`results` 按现有测速顺序输出，`best` 与 `results[0]` 表示同一条结果。`download_speed_mb_per_second` 与 CSV 一致，按 1024 × 1024 字节换算。
 
 > [!NOTE]
 > _如果你发现**下载速度为 0.00**，那么可以用**调试模式 `-debug`** 排查一下，详见：[**# 下载测速都是 0.00 ？**](https://github.com/XIU2/CloudflareSpeedTest#-%E4%B8%8B%E8%BD%BD%E6%B5%8B%E9%80%9F%E9%83%BD%E6%98%AF-000-)_
@@ -206,6 +237,8 @@ https://github.com/XIU2/CloudflareSpeedTest
     -o result.csv
         写入结果文件；如路径含有空格请加上引号；值为空时不写入文件 [-o ""]；(默认 result.csv)
         注意：在一些环境下使用 -o "" 可能会被忽略掉这个空参数导致报错，可加个空格 -o " " 解决
+    -json result.json
+        原子写入 JSON 结果文件，供外部程序读取；值为空时不写入；(默认 空)
 
     -dd
         禁用下载测速；禁用后测速结果会按延迟排序 (默认按下载速度排序)；(默认 启用)

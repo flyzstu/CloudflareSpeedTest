@@ -62,6 +62,8 @@ https://github.com/XIU2/CloudflareSpeedTest
         指定IP段数据；直接通过参数指定要测速的 IP 段数据，英文逗号分隔；(默认 空)
     -o result.csv
         写入结果文件；如路径含有空格请加上引号；值为空时不写入文件 [-o ""]；(默认 result.csv)
+    -json result.json
+        原子写入 JSON 结果文件，供外部程序读取；值为空时不写入；(默认 空)
 
     -dd
         禁用下载测速；禁用后测速结果会按延迟排序 (默认按下载速度排序)；(默认 启用)
@@ -98,6 +100,7 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.StringVar(&task.IPFile, "f", "ip.txt", "IP段数据文件")
 	flag.StringVar(&task.IPText, "ip", "", "指定IP段数据")
 	flag.StringVar(&utils.Output, "o", "result.csv", "输出结果文件")
+	flag.StringVar(&utils.JSONOutput, "json", "", "原子写入 JSON 结果文件")
 
 	flag.BoolVar(&task.Disable, "dd", false, "禁用下载测速")
 	flag.BoolVar(&task.TestAll, "allip", false, "测速全部 IP")
@@ -139,9 +142,10 @@ func main() {
 	pingData := task.NewPing().Run().FilterDelay().FilterLossRate()
 	// 开始下载测速
 	speedData := task.TestDownloadSpeed(pingData)
-	utils.ExportCsv(speedData) // 输出文件
-	speedData.Print()          // 打印结果
-	endPrint()                 // 根据情况选择退出方式（针对 Windows）
+	utils.ExportCsv(speedData)  // 输出文件
+	utils.ExportJSON(speedData) // 输出机器可读 JSON 文件
+	speedData.Print()           // 打印结果
+	endPrint()                  // 根据情况选择退出方式（针对 Windows）
 }
 
 // 根据情况选择退出方式（针对 Windows）
