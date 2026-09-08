@@ -1,0 +1,101 @@
+# CloudflareSpeedTest 每日定时测速 + 推送结果到 Mattermost
+# 参考集群里 glados-checkin 的模式：脚本放 ConfigMap 挂载执行，凭据放 Secret。
+# 部署：kubectl apply -f deploy/cfst-cronjob.yaml
+# 凭据：kubectl create secret generic cfst-speedtest \
+#         --from-literal=MATTERMOST_URL='https://...' \
+#         --from-literal=MATTERMOST_TOKEN='xxx' \
+#         --from-literal=MATTERMOST_CHANNEL_ID='yyy'
+# 可选：在 Secret 里加 CFST_URL 键可切换自建测速地址（如 https://your.domain/__down?bytes=100000000）
+#       加 CFST_DEBUG=1 可输出每个失败请求的详细错误
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cfst-speedtest-script
+  namespace: default
+data:
+  cfst.sh: |
+    #!/bin/sh
+    # 运行测速并把结果推送到 Mattermost（镜像内自带 cfst 与 ip.txt）
+    set -eu
+
+    RESULT_JSON="${RESULT_JSON:-/tmp/result.json}"
+
+    cfst -f /ip.txt \
+      -dn "${CFST_DN:-10}" \
+      -dt "${CFST_DT:-10}" \
+      -t "${CFST_T:-4}" \
+      ${CFST_URL:+-url "${CFST_URL}"} \
+      ${CFST_TL:+-tl "${CFST_TL}"} \
+      ${CFST_DEBUG:+-debug} \
+      -o "" -p 0 \
+      -json "$RESULT_JSON"
+
+    bark() {
+      info="$1"
+      jq -n \
+        --arg channel_id "${MATTERMOST_CHANNEL_ID}" \
+        --arg message "${info}" \
+        '{channel_id: $channel_id, message: $message}' |
+        curl -fsS -X POST "${MATTERMOST_URL}/api/v4/posts" \
+          -H "Authorization: Bearer ${MATTERMOST_TOKEN}" \
+          -H 'Content-Type: application/json; charset=utf-8' \
+          -d @- || true
+    }
+
+    TEST_URL="${CFST_URL:-speed.cloudflare.com(默认)}"
+    INFO="$(jq -r --arg url "$TEST_URL" '
+      def mbps: (. * 100 | round) / 100;
+      "最佳 IP: \(.best.ip // "-")" +
+      "\n速度: \((.best.download_speed_mb_per_second // 0) | mbps) MB/s   延迟: \((.best.latency_ms // 0) | round) ms   地区: \(.best.colo // "-")" +
+      "\n\nTop \(if (.results | length) > 5 then 5 else (.results | length) end):" +
+      (reduce (.results[:5][]) as $r ("";
+        . + "\n- \($r.ip)  \($r.download_speed_mb_per_second | mbps) MB/s  \($r.latency_ms | round) ms  \($r.colo // "-")")) +
+      "\n\n测速地址: \($url)\n生成时间: \(.generated_at)"
+    ' "$RESULT_JSON" 2>/dev/null)" || INFO="(结果 JSON 解析失败)"
+
+    echo "$INFO"
+    bark "CloudflareSpeedTest 每日测速完成：$INFO" || true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cfst-speedtest
+  namespace: default
+spec:
+  schedule: "30 4 * * *" # 每天 04:30（Asia/Shanghai）
+  timeZone: Asia/Shanghai
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 86400
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 1800
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: cfst
+              image: ghcr.io/flyzstu/cloudflarespeedtest:latest
+              imagePullPolicy: Always
+              command: ["/bin/sh", "-c"]
+              args: ["/scripts/cfst.sh"]
+              envFrom:
+                - secretRef:
+                    name: cfst-speedtest
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 32Mi
+                limits:
+                  memory: 256Mi
+          volumes:
+            - name: script
+              configMap:
+                name: cfst-speedtest-script
+                defaultMode: 493

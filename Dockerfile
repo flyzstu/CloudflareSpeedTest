@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldfl
 
 FROM alpine:3.20
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl jq
 COPY --from=builder /out/cfst /usr/local/bin/cfst
 COPY ip.txt /ip.txt
 COPY ipv6.txt /ipv6.txt
