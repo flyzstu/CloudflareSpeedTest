@@ -29,6 +29,7 @@ data:
 
     CANDIDATE_JSON="/tmp/candidates.json"
     CANDIDATE_TXT="/tmp/candidate_ips.txt"
+    ECH_CONFIG="${ECH_CONFIG:-AEX+DQBBsgAgACCILyIIZykc/vv4HTNald4Zfq9FJavc6/qVfc93+spYKwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=}"
 
     bark() {
       info="$1"
@@ -80,6 +81,7 @@ data:
       cfst -f "$CANDIDATE_TXT" \
         -url "$url" \
         -ech \
+        -ech-config "$ECH_CONFIG" \
         -h2 \
         -h2-multiplex 4 \
         -dn 1 \
