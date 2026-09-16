@@ -25,8 +25,10 @@ var (
 	ECHConfigBytes []byte
 	baseTLSConfig  *tls.Config
 	tlsInitMu      sync.RWMutex
-	reECHParam     = regexp.MustCompile(`ech=([A-Za-z0-9+/=]+)`)
+	reECHParam = regexp.MustCompile(`ech="?([A-Za-z0-9+/=]+)"?`)
 )
+
+const defaultCloudflareECHConfigB64 = "AEX+DQBBsgAgACCILyIIZykc/vv4HTNald4Zfq9FJavc6/qVfc93+spYKwAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA="
 
 type dohResponse struct {
 	Status int `json:"Status"`
@@ -90,11 +92,14 @@ func InitTLS(rawURL string) error {
 
 func fetchECHConfig(domain string) ([]byte, error) {
 	dohServers := []string{
+		fmt.Sprintf("https://223.5.5.5/resolve?name=%s&type=65", url.QueryEscape(domain)),
+		fmt.Sprintf("https://cloudflare-dns.com/dns-query?name=%s&type=HTTPS", url.QueryEscape(domain)),
+		fmt.Sprintf("https://1.0.0.1/dns-query?name=%s&type=HTTPS", url.QueryEscape(domain)),
 		fmt.Sprintf("https://1.1.1.1/dns-query?name=%s&type=HTTPS", url.QueryEscape(domain)),
 		fmt.Sprintf("https://dns.google/resolve?name=%s&type=HTTPS", url.QueryEscape(domain)),
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 3 * time.Second}
 	var lastErr error
 
 	for _, endpoint := range dohServers {
@@ -133,6 +138,11 @@ func fetchECHConfig(domain string) ([]byte, error) {
 				}
 			}
 		}
+	}
+
+	// Fallback to default Cloudflare public ECH config if DoH queries failed
+	if decoded, err := base64.StdEncoding.DecodeString(defaultCloudflareECHConfigB64); err == nil && len(decoded) > 0 {
+		return decoded, nil
 	}
 
 	if lastErr != nil {
