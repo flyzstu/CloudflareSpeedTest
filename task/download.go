@@ -139,7 +139,7 @@ func printDownloadDebugInfo(ip *net.IPAddr, err error, statusCode int, url, last
 func downloadHandler(ip *net.IPAddr) (float64, string) {
 	var lastRedirectURL string // 用于记录最后一次重定向目标，以便在访问错误时输出
 	client := &http.Client{
-		Transport: &http.Transport{DialContext: getDialContext(ip)},
+		Transport: newHTTPTransport(ip),
 		Timeout:   Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			lastRedirectURL = req.URL.String() // 记录每次重定向的目标，以便在访问错误时输出
@@ -156,6 +156,17 @@ func downloadHandler(ip *net.IPAddr) (float64, string) {
 		},
 	}
 	defer client.CloseIdleConnections()
+
+	// HTTP/2 多路复用并发流校验
+	if H2Multiplex > 0 {
+		if err := CheckH2Multiplex(client, URL, H2Multiplex); err != nil {
+			if utils.Debug {
+				utils.Red.Printf("[调试] IP: %s, HTTP/2 多路复用测试失败 (%d 并发流): %v\n", ip.String(), H2Multiplex, err)
+			}
+			return 0.0, ""
+		}
+	}
+
 	req, err := http.NewRequest("GET", URL, nil)
 	if err != nil {
 		if utils.Debug { // 调试模式下，输出更多信息
@@ -174,6 +185,27 @@ func downloadHandler(ip *net.IPAddr) (float64, string) {
 		return 0.0, ""
 	}
 	defer response.Body.Close()
+
+	// 校验 ECH 是否被接受
+	if EnableECH {
+		if response.TLS == nil || !response.TLS.ECHAccepted {
+			if utils.Debug {
+				utils.Red.Printf("[调试] IP: %s, 下载测速 ECH 握手未被接受 (ECHAccepted=false)\n", ip.String())
+			}
+			return 0.0, ""
+		}
+	}
+
+	// 校验 HTTP/2 是否生效
+	if ForceH2 {
+		if response.Proto != "HTTP/2.0" {
+			if utils.Debug {
+				utils.Red.Printf("[调试] IP: %s, 下载测速协议非 HTTP/2 (当前: %s)\n", ip.String(), response.Proto)
+			}
+			return 0.0, ""
+		}
+	}
+
 	if response.StatusCode != 200 {
 		if utils.Debug { // 调试模式下，输出更多信息
 			printDownloadDebugInfo(ip, nil, response.StatusCode, URL, lastRedirectURL, response)

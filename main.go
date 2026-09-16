@@ -45,6 +45,15 @@ https://github.com/XIU2/CloudflareSpeedTest
     -cfcolo HKG,KHH,NRT,LAX,SEA,SJC,FRA,MAD
         匹配指定地区；IATA 机场地区码或国家/城市码，英文逗号分隔，仅 HTTPing 模式可用；(默认 所有地区)
 
+    -ech
+        启用 ECH (Encrypted Client Hello) 握手测速；需搭配 https:// 测速地址，会自动切换为 HTTPing 延迟测速；(默认 关闭)
+    -ech-config [base64]
+        指定 ECH Config 列表 (Base64)；默认自动通过 DNS HTTPS/DoH 查询目标域名获取；
+    -h2
+        强制 HTTP/2 协议测速；若未协商到 HTTP/2 则判定为握手失败；(默认 关闭)
+    -h2-multiplex 4
+        HTTP/2 多路复用并发流校验；在同一 TCP/TLS 连接并发发起多条流测试抗断流能力 (0 为关闭)；(默认 0)
+
     -tl 200
         平均延迟上限；只输出低于指定平均延迟的 IP，各上下限条件可搭配使用；(默认 9999 ms)
     -tll 40
@@ -90,6 +99,11 @@ https://github.com/XIU2/CloudflareSpeedTest
 	flag.BoolVar(&task.Httping, "httping", false, "切换测速模式")
 	flag.IntVar(&task.HttpingStatusCode, "httping-code", 0, "有效状态代码")
 	flag.StringVar(&task.HttpingCFColo, "cfcolo", "", "匹配指定地区")
+
+	flag.BoolVar(&task.EnableECH, "ech", false, "启用 ECH 测速")
+	flag.StringVar(&task.ECHConfigB64, "ech-config", "", "指定 ECH Config (Base64)")
+	flag.BoolVar(&task.ForceH2, "h2", false, "强制 HTTP/2 协议测速")
+	flag.IntVar(&task.H2Multiplex, "h2-multiplex", 0, "HTTP/2 多路复用并发流校验数量")
 
 	flag.IntVar(&maxDelay, "tl", 9999, "平均延迟上限")
 	flag.IntVar(&minDelay, "tll", 0, "平均延迟下限")
@@ -137,6 +151,28 @@ func main() {
 	task.InitRandSeed() // 置随机数种子
 
 	fmt.Printf("# XIU2/CloudflareSpeedTest %s \n\n", version)
+
+	if task.EnableECH {
+		if !task.Httping {
+			utils.Yellow.Println("[提示] 检测到启用 ECH 测速，自动切换为 HTTPing 延迟测速模式...")
+			task.Httping = true
+		}
+	}
+
+	if err := task.InitTLS(task.URL); err != nil {
+		utils.Red.Printf("[错误] 初始化 TLS/ECH 失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	if task.EnableECH {
+		utils.Green.Printf("[ECH] 已启用 ECH 握手校验，目标域名: %s (ECHConfig 长度: %d 字节)\n", task.TargetHostname, len(task.ECHConfigBytes))
+	}
+	if task.ForceH2 {
+		utils.Green.Printf("[HTTP/2] 已启用强制 HTTP/2 协议校验\n")
+	}
+	if task.H2Multiplex > 0 {
+		utils.Green.Printf("[HTTP/2] 已启用 HTTP/2 多路复用并发流校验 (%d 并发流)\n", task.H2Multiplex)
+	}
 
 	// 开始延迟测速 + 过滤延迟/丢包
 	pingData := task.NewPing().Run().FilterDelay().FilterLossRate()

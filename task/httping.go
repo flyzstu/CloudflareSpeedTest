@@ -28,11 +28,8 @@ var (
 // pingReceived pingTotalTime
 func (p *Ping) httping(ip *net.IPAddr) (int, time.Duration, string) {
 	hc := http.Client{
-		Timeout: time.Second * 2,
-		Transport: &http.Transport{
-			DialContext: getDialContext(ip),
-			//TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // 跳过证书验证
-		},
+		Timeout:   time.Second * 3,
+		Transport: newHTTPTransport(ip),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // 阻止重定向
 		},
@@ -59,7 +56,26 @@ func (p *Ping) httping(ip *net.IPAddr) (int, time.Duration, string) {
 		}
 		defer response.Body.Close()
 
-		//fmt.Println("IP:", ip, "StatusCode:", response.StatusCode, response.Request.URL)
+		// 校验 ECH 是否成功协商
+		if EnableECH {
+			if response.TLS == nil || !response.TLS.ECHAccepted {
+				if utils.Debug {
+					utils.Red.Printf("[调试] IP: %s, ECH 握手未被对端接受 (ECHAccepted=false)\n", ip.String())
+				}
+				return 0, 0, ""
+			}
+		}
+
+		// 校验是否协商为 HTTP/2
+		if ForceH2 {
+			if response.Proto != "HTTP/2.0" {
+				if utils.Debug {
+					utils.Red.Printf("[调试] IP: %s, 协议非 HTTP/2 (当前: %s)\n", ip.String(), response.Proto)
+				}
+				return 0, 0, ""
+			}
+		}
+
 		// 如果未指定的 HTTP 状态码，或指定的状态码不合规，则默认只认为 200、301、302 才算 HTTPing 通过
 		if HttpingStatusCode == 0 || HttpingStatusCode < 100 && HttpingStatusCode > 599 {
 			if response.StatusCode != 200 && response.StatusCode != 301 && response.StatusCode != 302 {
@@ -111,6 +127,14 @@ func (p *Ping) httping(ip *net.IPAddr) (int, time.Duration, string) {
 		startTime := time.Now()
 		response, err := hc.Do(request)
 		if err != nil {
+			continue
+		}
+		if EnableECH && (response.TLS == nil || !response.TLS.ECHAccepted) {
+			response.Body.Close()
+			continue
+		}
+		if ForceH2 && response.Proto != "HTTP/2.0" {
+			response.Body.Close()
 			continue
 		}
 		success++
