@@ -15,46 +15,105 @@ metadata:
 data:
   cfst.sh: |
     #!/bin/sh
-    # 运行测速并把结果推送到 Mattermost（镜像内自带 cfst 与 ip.txt）
     set -eu
 
-    RESULT_JSON="${RESULT_JSON:-/tmp/result.json}"
+    # 运行测速并把多出口结果推送到 Mattermost（镜像内自带 cfst 与 ip.txt）
+    TARGETS="
+    aliyunsg-xhttp|https://sin.piccdn.click/__down?file=100mb
+    hwhk-xhttp|https://hkg.piccdn.click/__down?file=100mb
+    awsjp-xhttp|https://nrt.piccdn.click/__down?file=100mb
+    aliyunus-xhttp|https://sjc.piccdn.click/__down?file=100mb
+    rnlax-xhttp|https://lax.piccdn.click/__down?file=100mb
+    fr-xhttp|https://par.piccdn.click/__down?file=100mb
+    "
 
-    cfst -f /ip.txt \
-      -dn "${CFST_DN:-10}" \
-      -dt "${CFST_DT:-10}" \
-      -t "${CFST_T:-4}" \
-      ${CFST_URL:+-url "${CFST_URL}"} \
-      ${CFST_TL:+-tl "${CFST_TL}"} \
-      ${CFST_DEBUG:+-debug} \
-      -o "" -p 0 \
-      -json "$RESULT_JSON"
+    CANDIDATE_JSON="/tmp/candidates.json"
+    CANDIDATE_TXT="/tmp/candidate_ips.txt"
 
     bark() {
       info="$1"
+      [ -z "${MATTERMOST_URL:-}" ] && return 0
       jq -n \
-        --arg channel_id "${MATTERMOST_CHANNEL_ID}" \
+        --arg channel_id "${MATTERMOST_CHANNEL_ID:-}" \
         --arg message "${info}" \
         '{channel_id: $channel_id, message: $message}' |
         curl -fsS -X POST "${MATTERMOST_URL}/api/v4/posts" \
-          -H "Authorization: Bearer ${MATTERMOST_TOKEN}" \
+          -H "Authorization: Bearer ${MATTERMOST_TOKEN:-}" \
           -H 'Content-Type: application/json; charset=utf-8' \
           -d @- || true
     }
 
-    TEST_URL="${CFST_URL:-speed.cloudflare.com(默认)}"
-    INFO="$(jq -r --arg url "$TEST_URL" '
-      def mbps: (. * 100 | round) / 100;
-      "最佳 IP: \(.best.ip // "-")" +
-      "\n速度: \((.best.download_speed_mb_per_second // 0) | mbps) MB/s   延迟: \((.best.latency_ms // 0) | round) ms   地区: \(.best.colo // "-")" +
-      "\n\nTop \(if (.results | length) > 5 then 5 else (.results | length) end):" +
-      (reduce (.results[:5][]) as $r ("";
-        . + "\n- \($r.ip)  \($r.download_speed_mb_per_second | mbps) MB/s  \($r.latency_ms | round) ms  \($r.colo // "-")")) +
-      "\n\n测速地址: \($url)\n生成时间: \(.generated_at)"
-    ' "$RESULT_JSON" 2>/dev/null)" || INFO="(结果 JSON 解析失败)"
+    echo "=== [阶段 1] 全局低延迟初筛 (Top 15 候选池) ==="
+    cfst -f /ip.txt \
+      -t 4 \
+      -dn 0 -dd \
+      -tl "${CFST_TL:-180}" \
+      -tlr 0 \
+      -o "" -p 0 \
+      -json "$CANDIDATE_JSON" || true
 
-    echo "$INFO"
-    bark "CloudflareSpeedTest 每日测速完成：$INFO" || true
+    if [ -s "$CANDIDATE_JSON" ]; then
+      jq -r '.results[:15][].ip // empty' "$CANDIDATE_JSON" > "$CANDIDATE_TXT"
+    fi
+
+    if [ ! -s "$CANDIDATE_TXT" ]; then
+      echo "严格零丢包初筛未产生结果，尝试基础延迟初筛..."
+      cfst -f /ip.txt -t 2 -dn 0 -dd -tl "${CFST_TL:-220}" -o "" -p 0 -json "$CANDIDATE_JSON" || true
+      jq -r '.results[:15][].ip // empty' "$CANDIDATE_JSON" > "$CANDIDATE_TXT"
+    fi
+
+    COUNT=$(wc -l < "$CANDIDATE_TXT" 2>/dev/null || echo "0")
+    echo "共筛选出 ${COUNT} 个候选 IP，准备进行多出口 ECH + H2 测速..."
+
+    REPORT=""
+
+    echo "=== [阶段 2] 各地域出口 ECH + H2 精确测速 ==="
+    for item in $TARGETS; do
+      [ -z "$item" ] && continue
+      tag=$(echo "$item" | cut -d'|' -f1)
+      url=$(echo "$item" | cut -d'|' -f2)
+
+      echo "--> 正在测试出口: $tag ($url)"
+      out_json="/tmp/res_${tag}.json"
+
+      # 针对候选池进行真实 ECH + H2 + 4并发流测试，测速前 1 个，限制 5 秒
+      cfst -f "$CANDIDATE_TXT" \
+        -url "$url" \
+        -ech \
+        -h2 \
+        -h2-multiplex 4 \
+        -dn 1 \
+        -dt "${CFST_DT:-5}" \
+        -o "" -p 0 \
+        -json "$out_json" || true
+
+      best_ip=$(jq -r '.best.ip // empty' "$out_json" 2>/dev/null || echo "")
+      best_speed=$(jq -r '.best.download_speed_mb_per_second // 0' "$out_json" 2>/dev/null || echo "0")
+      best_delay=$(jq -r '.best.latency_ms // 0' "$out_json" 2>/dev/null || echo "0")
+      best_colo=$(jq -r '.best.colo // "-"' "$out_json" 2>/dev/null || echo "-")
+
+      if [ -n "$best_ip" ]; then
+        line="- **${tag}**: \`${best_ip}\` | 速度: ${best_speed} MB/s | 延迟: ${best_delay} ms (${best_colo})"
+        echo "  [OK] $line"
+        REPORT="${REPORT}
+    ${line}"
+      else
+        line="- **${tag}**: ❌ 无可用 IP (ECH 握手失败或 H2 多流复用被阻断)"
+        echo "  [FAIL] $line"
+        REPORT="${REPORT}
+    ${line}"
+      fi
+    done
+
+    echo "=== [阶段 3] 测速完成，汇总推送 ==="
+    MSG="### 🌐 CloudflareSpeedTest (v2.4.0) 多出口 ECH+H2 测速报告
+    ${REPORT}
+
+    测速时间: $(date '+%Y-%m-%d %H:%M:%S')
+    特性: 原生 ECH 握手校验 + HTTP/2 强制校验 + 4并发流复用防断流"
+
+    echo "$MSG"
+    bark "$MSG"
 ---
 apiVersion: batch/v1
 kind: CronJob
@@ -77,7 +136,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: cfst
-              image: ghcr.io/flyzstu/cloudflarespeedtest:latest
+              image: ghcr.io/flyzstu/cloudflarespeedtest:2.4.0
               imagePullPolicy: Always
               command: ["/bin/sh", "-c"]
               args: ["/scripts/cfst.sh"]
